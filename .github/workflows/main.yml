@@ -4,7 +4,7 @@ name: hello-world application POC
 on:
  push:
    branches:
-   - main
+   - master
 
 
 env:
