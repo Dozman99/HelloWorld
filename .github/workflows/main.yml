@@ -1,0 +1,203 @@
+name: hello-world application POC
+
+
+on:
+ push:
+   branches:
+   - main
+
+
+env:
+ RESOURCE_GROUP: demo-rg
+ WEBAPP_NAME: hello-world
+ SLOT_NAME: staging  # Create a slot on your web app called "staging"
+ DOTNET_VERSION: '6.0.x'
+
+
+jobs:
+#    build:
+#      runs-on: ubuntu-latest
+
+
+#      steps:
+
+#      - name: Check out repo
+#        uses: actions/checkout@v1
+
+#      - name: Retrieve cached node module directory -if present
+#        uses: actions/cache@v2
+#        id: hello-world-cache
+#        with:
+#          path: node modules
+#          key: node-modules-${{ runner.os }}-hello-world-build-${{ hashFiles ('package-lock.json') }}
+
+
+#      - name: Install dependencies (if the cached directory was not found)
+#        if: steps.hello-world-cache.outputs.cache-hit != 'true'
+
+
+#      - name: Set up .Net
+#        uses: actions/setup-java@v3
+#        with:
+#          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+
+#      - name: Set up dependency caching for net
+#        uses: actions/cache@v2
+#        with:
+#          path: ~/.nuget/packages
+#          key: ${( runner.os })-nuget-hello-world-build-${{ hashfiles('**/*.csproj') }}
+#          restore_keys: |
+#            ${{ runner.os }}-nuget-hello-world-build-
+
+
+#      - name: Build hello-world
+#        run: dotnet build hello-world.Function -c Release
+
+
+#      - name: Publish hello-world
+#        run: dotnet publish hello-world.Function -c Release
+
+
+#      - name: Test hello-world
+#        run: dotnet test hello-world.Function -c Release
+
+
+#      - name: Archive function artifacts for hello-world app
+#        uses: actions/upload-artifact@v2
+#        with:
+#          name: hello-world-function-artifact
+#          path: /home/runner/work/hello-world/hello-world/hello-world.Function
+
+
+
+#    deploy-to-stage:
+#      name: Deploy to staging
+#      needs: build
+#      runs-on: ubuntu-latest
+#      environment:
+#        name: 'Staging'
+#        url: ${{ steps.deploy-to-stage.outputs.webapp-url }}
+
+
+#      steps:
+#      - name: Log into Azure CLI with service principal
+#        uses: azure/login@v1.1
+#        with:
+#          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+
+#      - name: Download infrastructure artifacts for function
+#        uses: actions/download-artifact@v2
+#        with:
+#          name: hello-world-function_artifact
+#          path: ${{ env. RUNNER_DIR }}hello-world/hello-world/hello-world.Function
+
+#      - name: Deploy to stage env
+#        uses: azure/webapps-deploy@v1
+#        id: deploy-to-stage
+#        with:
+#          app-name: ${{ env.WEBAPP_NAME }}
+#          slot-name:  ${{ env.SLOT_NAME }}
+#          package: '*.war'
+
+
+#    release-to-prod:
+#      name: Release to prod
+#      needs: deploy-to-stage
+#      runs-on: ubuntu-latest
+#      environment:
+#        name: 'Production'
+#        url: 'https://${{ env.WEBAPP_NAME }}.azurewebsites.net/'
+
+
+#      steps:
+#      - name: Log into Azure CLI with service principal
+#        uses: azure/login@v1.1
+#        with:
+#          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+
+#      - name: Swap slots
+#        id: main-swap
+#        run: az webapp deployment slot swap -s ${{ env.SLOT_NAME }} -n ${{ env.WEBAPP_NAME }} -g ${{ env.RESOURCE_GROUP }}       
+
+# THE ABOVE IMPLEMENTATION WOULD HAVE BEEN DONE IF THERE WERE NO CONTAINERISED SOLUTION APPROACH
+# above I implemented caching but can't do that for containers, the best I can is to be careful about 
+# my dockerfile by keeping the frequent changes at the least of the docker file line. 
+   build-and-deploy-to-stage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@main
+
+    - name: Authenticate using a Service Principal
+      uses: azure/actions/login@v1
+      with:
+        creds: ${{ secrets.AZURE_SP }}
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.DOCKER_HUB_USERNAME }}
+        password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+    - uses: paulhatch/semantic-version@v5.0.2
+      id: git-semver
+      with:
+        tag_prefix: "v"
+        major_pattern: "(MAJOR)"
+        minor_pattern: "(MINOR)"
+        version_format: "${major}.${minor}.${patch}"
+        bump_each_commit: false
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+      # pushing the images
+    - name: Build and push
+      uses: docker/build-push-action@v2
+      with:
+        context: .
+        file: ./HelloWorld/Dockerfile
+        push: true
+        tags: ${{ secrets.DOCKER_HUB_USERNAME }}/helloworld:${{ steps.git-semver.outputs.version }}
+
+    - name: Update image tag on the Azure Web App
+      uses: azure/webapps-container-deploy@v1
+      with:
+        app-name: 'helloworld'
+        slot-name: 'stage'
+        images: ${{ secrets.DOCKER_HUB_USERNAME }}/helloworld:${{ steps.git-semver.outputs.version }}
+        
+    - name: Tag and push current repo code
+      run: |
+        git tag ${{ steps.git-semver.outputs.version_tag }}
+        git push origin ${{ steps.git-semver.outputs.version_tag }}
+        
+    - name: Sign out of Azure.
+      run: |
+        az logout
+        
+        
+        
+   release-to-prod:
+     name: Release to prod
+     needs: build-and-deploy-to-stage
+     runs-on: ubuntu-latest
+     environment:
+       name: 'Production'
+       url: 'https://${{ env.WEBAPP_NAME }}.azurewebsites.net/'
+
+     steps:
+       - name: Log into Azure CLI with service principal
+         uses: azure/login@v1.1
+         with:
+           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+       - name: Swap slots
+         id: main-swap
+         run: az webapp deployment slot swap -s ${{ env.SLOT_NAME }} -n ${{ env.WEBAPP_NAME }} -g ${{ env.RESOURCE_GROUP }}  --target-slot production      
+       - name: Sign out of Azure.
+         run: |
+           az logout
